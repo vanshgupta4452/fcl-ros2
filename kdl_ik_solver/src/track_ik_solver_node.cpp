@@ -40,12 +40,17 @@ private:
     std::unique_ptr<TRAC_IK::TRAC_IK> tracik_solver_;
     std::unique_ptr<ChainFkSolverPos_recursive> fk_solver_;
     
+
+
+
+    
     // Publishers and subscribers
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr target_point_pub_;
     rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr target_point_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr target_pose_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscriber_;
     rclcpp::TimerBase::SharedPtr timer_;
 
     // Transform broadcasting
@@ -69,6 +74,7 @@ private:
     double position_tolerance_;
     double joint_velocity_limit_;
     double convergence_threshold_;
+    std::vector<double> joint_positions_;
     
     // Workspace analysis
     std::vector<Vector> workspace_points_;
@@ -92,35 +98,37 @@ public:
                            target_reached_(true),
                            position_tolerance_(0.01),    
                            joint_velocity_limit_(1.0),   
-                           convergence_threshold_(0.001),
+                           convergence_threshold_(0.01),
                            current_target_index_(0),
                            successful_solutions_(0),
                            failed_solutions_(0),
                            average_solve_time_(0.0) {
 
-        // Publishers
         joint_state_pub_ = this->create_publisher<sensor_msgs::msg::JointState>("joint_states", 10);
         marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("visualization_markers", 10);
         target_point_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>("target_point", 10);
         
-        // Subscribers - Added point subscriber for position-only commands
         target_point_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
             "target_point_cmd", 10, 
             std::bind(&ImprovedTrackIKNode::targetPointCallback, this, std::placeholders::_1));
             
-        // Keep pose subscriber for backward compatibility
         target_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
             "target_pose_cmd", 10, 
             std::bind(&ImprovedTrackIKNode::targetPoseCallback, this, std::placeholders::_1));
 
-        // Initialize robot model
+        joint_state_subscriber_ = this->create_subscription<sensor_msgs::msg::JointState>(
+            "/joint_states",    // topic ka naam
+            10,                 // queue size
+            std::bind(&ImprovedTrackIKNode::jointStateCallback, this, std::placeholders::_1)
+);
+   
+
         if (!loadRobotModel()) {
             RCLCPP_ERROR(this->get_logger(), "Failed to load robot model");
             return;
         }
         robot_model_.initString(urdf_string_);
 
-        // Initialize solvers
         if (!initializeSolvers()) {
             RCLCPP_ERROR(this->get_logger(), "Failed to initialize solvers");
             return;
@@ -129,16 +137,12 @@ public:
         robot_model_.initString(urdf_string_);
 
 
-        // Initialize test targets
         initializeTestTargets();
         
-        // Generate workspace samples
         generateWorkspaceSamples();
         
-        // Test basic functionality
         testSolverCapabilities();
 
-        // Start main timer
         timer_ = this->create_wall_timer(100ms, std::bind(&ImprovedTrackIKNode::timerCallback, this));
 
         RCLCPP_INFO(this->get_logger(), "Improved Track-IK Node initialized successfully (Position-only mode)");
@@ -146,8 +150,7 @@ public:
 
 private:
     bool loadRobotModel() {
-        // Load URDF file
-        std::string urdf_path = "/home/vansh/intern-ardee/src/fcl-ros2/ajgar_description/urdf/arm.urdf";
+        std::string urdf_path = "/home/vansh/intern-ardee/src/fcl-ros2/ajgar_description/urdf/ik_arm.urdf";
         
         std::ifstream urdf_file(urdf_path);
         if (!urdf_file.is_open()) {
@@ -160,21 +163,18 @@ private:
         urdf_string_ = buffer.str();
         urdf_file.close();
         
-        // Parse URDF
         // urdf::Model robot_model;
         if (!robot_model_.initString(urdf_string_)) {
             RCLCPP_ERROR(this->get_logger(), "Failed to parse URDF");
             return false;
         }
         
-        // Build KDL tree
         KDL::Tree kdl_tree;
         if (!kdl_parser::treeFromUrdfModel(robot_model_, kdl_tree)) {
             RCLCPP_ERROR(this->get_logger(), "Failed to convert URDF to KDL Tree");
             return false;
         }
         
-        // Extract chain
         std::string base_link = "base_link";
         std::string tip_link = "end__1";
         
@@ -184,7 +184,6 @@ private:
             return false;
         }
         
-        // Extract joint names
         joint_names_.clear();
         for (unsigned int i = 0; i < kdl_chain_.getNrOfSegments(); ++i) {
             KDL::Segment segment = kdl_chain_.getSegment(i);
@@ -193,7 +192,6 @@ private:
             }
         }
         
-        // Fallback joint names if extraction fails
         if (joint_names_.empty()) {
             joint_names_ = {
             "base_joint",
@@ -227,7 +225,6 @@ private:
         tracik_solver_ = std::make_unique<TRAC_IK::TRAC_IK>(
             base_link, tip_link, urdf_string_, timeout, eps, TRAC_IK::Distance);
         
-        // Verify Track-IK initialization
         KDL::Chain trac_ik_chain;
         if (!tracik_solver_->getKDLChain(trac_ik_chain)) {
             RCLCPP_ERROR(this->get_logger(), "Failed to get KDL chain from Track-IK");
@@ -307,6 +304,19 @@ private:
         return true;
     }
     
+
+     void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
+        {
+            if (msg->position.size() >= 6) {  
+                joint_positions_.assign(msg->position.begin(), msg->position.begin() + 6);
+            } else {
+                RCLCPP_WARN(this->get_logger(), "JointState message me 6 se kam joints hain!");
+            }
+        }
+
+
+
+
     void initializeTestTargets() {
         Frame current_frame;
         if (fk_solver_->JntToCart(current_joint_positions_, current_frame) >= 0) {
@@ -331,6 +341,7 @@ private:
             test_targets_ = {
                     Vector(0.4,0.3,0.2),
                     Vector(-0.4,0.3,0.2),
+                    
                    
                     
                 };
@@ -451,14 +462,11 @@ private:
         }
     }
     
-    // New method for position-only IK solving
     bool solveIKPositionOnly(const Vector& target_pos, const JntArray& q_init, JntArray& q_result) {
-        // First check if target is within reasonable bounds
         double distance_from_origin = target_pos.Norm();
         RCLCPP_INFO(this->get_logger(), "Target position: [%.3f, %.3f, %.3f], distance: %.3f", 
                    target_pos.x(), target_pos.y(), target_pos.z(), distance_from_origin);
         
-        // Check basic reachability
         if (distance_from_origin < 0.01) {
             RCLCPP_ERROR(this->get_logger(), "Target too close to origin: %.3f m", distance_from_origin);
             return false;
@@ -469,7 +477,6 @@ private:
             return false;
         }
         
-        // Create target frame with identity orientation (no orientation constraint)
         Frame target_frame;
         target_frame.p = target_pos;
         // target_frame.M = Rotation::Identity();  // Don't constrain orientation
@@ -478,19 +485,16 @@ private:
         
         auto start_time = std::chrono::high_resolution_clock::now();
         
-        // Try Track-IK with relaxed settings
         int result = tracik_solver_->CartToJnt(q_init, target_frame, q_result);
         
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
         
-        // Update performance statistics
         if (result >= 0) {
             successful_solutions_++;
             average_solve_time_ = (average_solve_time_ * (successful_solutions_ - 1) + 
                                   duration.count() / 1000.0) / successful_solutions_;
             
-            // Verify solution (only check position, ignore orientation)
             Frame verify_frame;
             if (fk_solver_->JntToCart(q_result, verify_frame) >= 0) {
                 Vector pos_error = target_pos - verify_frame.p;
@@ -558,53 +562,134 @@ private:
     }
     
     void timerCallback() {
-        // Smooth joint interpolation
+       
         bool joints_moving = false;
-        for (unsigned int i = 0; i < current_joint_positions_.rows(); ++i) {
-            double delta = target_joint_positions_(i) - current_joint_positions_(i);
-            
-            if (std::abs(delta) > convergence_threshold_) {
-                double max_step = joint_velocity_limit_ * 0.05; // 50ms timestep
-                double step = std::min(std::abs(delta), max_step);
+        KDL::Frame current_pose;
+        KDL::Frame target_pose;
+    
+        std::vector<double> integral_error(current_joint_positions_.rows(), 0.0);
+        std::vector<double> prev_error_a(current_joint_positions_.rows(), 0.0);
+        double prev_error=0.0;
+        
+        
+    
+        double Kp = 0.3489;
+        double Ki = 0.0;
+        double Kd = 0.00;
+        double integral=0.0;
+        double dt = 0.1; 
+        
+        // for (unsigned int i = 0; i < current_joint_positions_.rows(); ++i) {
+        for (unsigned int i = 5; i < 6; ++i) {
+            double target = target_joint_positions_(i);
+            std::cout<<"target"<<target<<std::endl;
+            std::cout << "Joint Positions: ";
+           double pos;
+        if (i < joint_positions_.size()) {
+                pos = joint_positions_[i];
                 
-                current_joint_positions_(i) += (delta > 0 ? 0.5 : -0.5) * step;
-                joint_velocities_(i) = (delta > 0 ? 0.5 : -0.5) * step / 0.05;
-                joints_moving = true;
-            } 
-            else if(delta<=0.0001){
+                std::cout << pos << " "<<std::endl;
+            } else {
+                std::cerr << "Index out of range: " << i << std::endl;
+            }
+
+            double delta=target-pos;
+       
+
+
+            // double current_pos=joint_positions_[i];
+            // std::cout<<"joint"<<current_pos<<std::endl;
+            bool oscillating = false;      // oscillation flag
+            int oscillation_count = 0;     
+             
+            static std::chrono::steady_clock::time_point last_oscillation_time;
+            static bool first_oscillation = true;
+
+            if ((prev_error_a[i] * delta) < 0) {
+                
+                oscillating = true;
+                oscillation_count++;
+                auto now = std::chrono::steady_clock::now();
+
+                if (!first_oscillation) {
+                    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_oscillation_time).count();
+                    std::cout << ">>> Oscillation detected at joint " << i 
+                            << " | Count = " << oscillation_count 
+                            << " | Time since last oscillation = " << duration << " ms" 
+                            << std::endl;
+                } else {
+                    first_oscillation = false;
+                }
+
+                last_oscillation_time = now;
+            }
+          
+            double deg_delta = delta * 180.0 / 3.14;
+            
+            double proportional= Kp * deg_delta;
+
+            
+            integral+= Ki* dt * deg_delta;
+            double derivative= Kd*( deg_delta- prev_error)/dt;
+            prev_error=deg_delta;
+            std::cout<<"error=="<<deg_delta<<std::endl;
+
+            
+            
+            double velocity= proportional+integral+derivative;
+            std::cout<<"pid=="<<velocity<<std::endl;
+            if (std::abs(delta) > convergence_threshold_) {
+                /
+                if (velocity>1.5 && std::abs(deg_delta)>5.0){
+                    current_joint_positions_(i) += 1.5*dt;
+                    joint_velocities_(i) = 1.5;
+                    std::cout<<"vel="<<joint_velocities_(i)<<std::endl;
+                    joints_moving = true;
+                }
+                else if(velocity<=-1.5 && std::abs(deg_delta)>5.0){
+                    current_joint_positions_(i) += -1.5*dt;
+                    joint_velocities_(i) = -1.5;
+                    std::cout<<"vel="<<joint_velocities_(i)<<std::endl;
+                    joints_moving = true;
+                }   
+             else if(std::abs(deg_delta)<5.0) {
+                    current_joint_positions_(i) += velocity*dt;
+                    joint_velocities_(i) = velocity;
+                    std::cout<<"vel="<<joint_velocities_(i)<<std::endl;
+                    joints_moving = true;
+                }
+                
+                else {
+                    current_joint_positions_(i) += velocity*dt;
+                    joint_velocities_(i) = velocity;
+                    std::cout<<"vel="<<joint_velocities_(i)<<std::endl;
+                    joints_moving = true;
+                }
+        }
+            else if(delta<=0.01){
                 current_joint_positions_(i) = target_joint_positions_(i);
                 joint_velocities_(i) = 0.0;
             }
-            else {
-                double max_step = joint_velocity_limit_ * 0.05; // 50ms timestep
-                double step = std::min(std::abs(delta), max_step);
-                
-                current_joint_positions_(i) += (delta > 0 ? 0.01 : -0.01) * step;
-                joint_velocities_(i) = (delta > 0 ? 0.0001 : -0.0001) * step / 0.05;
-                joints_moving = true;
-            }
+            
+            
         }
-        
-        // Publish joint states
         publishJointStates();
         
-        // Check if target is reached
+        
+        
         if (!joints_moving && !target_reached_) {
             target_reached_ = true;
             RCLCPP_INFO(this->get_logger(), "Target reached!");
         }
         
-        // Auto-cycle through test targets
         if (target_reached_ && !test_targets_.empty()) {
             static auto last_target_switch = std::chrono::steady_clock::now();
             auto now = std::chrono::steady_clock::now();
             
             if (std::chrono::duration_cast<std::chrono::seconds>(now - last_target_switch).count() > 3) {
-                // Switch to next target
                 current_target_index_ = (current_target_index_ + 1) % test_targets_.size();
                 current_target_position_ = test_targets_[current_target_index_];
                 
-                // Solve IK for new target (position only)
                 JntArray q_result(kdl_chain_.getNrOfJoints());
                 if (solveIKPositionOnly(current_target_position_, current_joint_positions_, q_result)) {
                     target_joint_positions_ = q_result;
@@ -618,10 +703,8 @@ private:
             }
         }
         
-        // Publish visualization
         publishVisualization();
         
-        // Print performance statistics occasionally
         static int counter = 0;
         if (++counter % 200 == 0) { // Every 10 seconds
             RCLCPP_INFO(this->get_logger(), 
@@ -652,10 +735,8 @@ private:
     void publishVisualization() {
         auto marker_array = visualization_msgs::msg::MarkerArray();
         
-        // Current end-effector position
         Frame current_frame;
         if (fk_solver_->JntToCart(current_joint_positions_, current_frame) >= 0) {
-            // End-effector marker
             auto ee_marker = visualization_msgs::msg::Marker();
             ee_marker.header.frame_id = "base_link";
             ee_marker.header.stamp = this->get_clock()->now();

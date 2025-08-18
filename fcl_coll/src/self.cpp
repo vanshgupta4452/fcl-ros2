@@ -20,8 +20,6 @@ class SelfCollisionChecker : public rclcpp::Node {
 public:
   SelfCollisionChecker() : Node("self_collision_checker") {
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("self_collision_markers", 1);
-    station_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("station_markers", 1);
-    table_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("table_markers", 1);
     tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
     
     // Subscribe to joint states
@@ -35,26 +33,13 @@ public:
       return;
     }
 
-    // Load station URDF
-    std::string station_urdf = ament_index_cpp::get_package_share_directory("Station_description") + "/urdf/Station.urdf";
-    if (!station_model_.initFile(station_urdf)) {
-      RCLCPP_ERROR(this->get_logger(), "Failed to load station URDF: %s", station_urdf.c_str());
-      return;
-    }
-
-     std::string table_urdf = ament_index_cpp::get_package_share_directory("fixture_table_description") + "/urdf/fixture_table.urdf";
-    if (!table_model_.initFile(table_urdf)) {
-      RCLCPP_ERROR(this->get_logger(), "Failed to load table URDF: %s", table_urdf.c_str());
-      return;
-    }
+    
 
     arm_package_share_dir_ = ament_index_cpp::get_package_share_directory("ajgar_description");
-    station_package_share_dir_ = ament_index_cpp::get_package_share_directory("Station_description");
-    table_package_share_dir_ = ament_index_cpp::get_package_share_directory("fixture_table_description");
     
     setupArmCollisionObjects();
-    setupStationCollisionObjects();
-    setupTableCollisionObjects();
+    // setupStationCollisionObjects();
+    // setupTableCollisionObjects();
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -67,32 +52,23 @@ public:
 
 private:
   urdf::Model arm_model_;
-  urdf::Model station_model_;
-  urdf::Model table_model_;
   Assimp::Importer importer_;
   
   // Arm collision objects
   std::map<std::string, std::shared_ptr<fcl::CollisionObjectd>> arm_collision_objects_;
   std::map<std::string, std::shared_ptr<fcl::CollisionGeometryd>> arm_collision_geometries_;
   std::map<std::string, Eigen::Isometry3d> arm_link_transforms_;
-  
-  // Station collision objects (static)
-  std::map<std::string, std::shared_ptr<fcl::CollisionObjectd>> station_collision_objects_;
-  std::map<std::string, std::shared_ptr<fcl::CollisionGeometryd>> station_collision_geometries_;
 
-  std::map<std::string, std::shared_ptr<fcl::CollisionObjectd>> table_collision_objects_;
-  std::map<std::string, std::shared_ptr<fcl::CollisionGeometryd>> table_collision_geometries_;
+
+
   
   std::map<std::string, double> current_joint_positions_;
   
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr station_marker_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr table_marker_pub_;
+
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::string arm_package_share_dir_;
-  std::string station_package_share_dir_;
-  std::string table_package_share_dir_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
@@ -199,69 +175,7 @@ private:
     }
   }
 
-  void setupStationCollisionObjects() {
-    for (const auto &pair : station_model_.links_) {
-      const auto &link = pair.second;
-      if (!link->collision || !link->collision->geometry) continue;
-
-      std::shared_ptr<fcl::CollisionGeometryd> geom = createGeometry(link->collision->geometry.get(), station_package_share_dir_);
-      if (!geom) continue;
-
-      station_collision_geometries_[link->name] = geom;
-      
-      
-      Eigen::Isometry3d station_transform = Eigen::Isometry3d::Identity();
-      
-      // Apply collision origin offset for station
-      if (link->collision) {
-        Eigen::Isometry3d collision_offset = Eigen::Isometry3d::Identity();
-        collision_offset.translation() << link->collision->origin.position.x,
-                                         link->collision->origin.position.y,
-                                         link->collision->origin.position.z;
-        Eigen::Quaterniond q(link->collision->origin.rotation.w,
-                             link->collision->origin.rotation.x,
-                             link->collision->origin.rotation.y,
-                             link->collision->origin.rotation.z);
-        collision_offset.linear() = q.toRotationMatrix();
-        
-        station_transform = station_transform * collision_offset;
-      }
-      
-      station_collision_objects_[link->name] = std::make_shared<fcl::CollisionObjectd>(geom, station_transform);
-    }
-  }
-
-  void setupTableCollisionObjects() {
-    for (const auto &pair : table_model_.links_) {
-      const auto &link = pair.second;
-      if (!link->collision || !link->collision->geometry) continue;
-
-      std::shared_ptr<fcl::CollisionGeometryd> geom = createGeometry(link->collision->geometry.get(), table_package_share_dir_);
-      if (!geom) continue;
-
-      table_collision_geometries_[link->name] = geom;
-      
   
-      Eigen::Isometry3d table_transform = Eigen::Isometry3d::Identity();
-      
-     
-      if (link->collision) {
-        Eigen::Isometry3d collision_offset = Eigen::Isometry3d::Identity();
-        collision_offset.translation() << link->collision->origin.position.x,
-                                         link->collision->origin.position.y,
-                                         link->collision->origin.position.z;
-        Eigen::Quaterniond q(link->collision->origin.rotation.w,
-                             link->collision->origin.rotation.x,
-                             link->collision->origin.rotation.y,
-                             link->collision->origin.rotation.z);
-        collision_offset.linear() = q.toRotationMatrix();
-        
-        table_transform = table_transform * collision_offset;
-      }
-      
-      table_collision_objects_[link->name] = std::make_shared<fcl::CollisionObjectd>(geom, table_transform);
-    }
-  }
 
   std::shared_ptr<fcl::CollisionGeometryd> createGeometry(urdf::Geometry* geometry, const std::string& package_dir) {
     std::shared_ptr<fcl::CollisionGeometryd> geom;
@@ -324,15 +238,12 @@ private:
 
   void checkCollisions() {
     std::set<std::string> arm_collided_links;
-    std::set<std::string> station_collided_links;
-    std::set<std::string> table_collided_links;
+    
     std::vector<std::pair<std::string, std::string>> arm_self_collided_pairs;
-    std::vector<std::pair<std::string, std::string>> arm_station_collided_pairs;
-    std::vector<std::pair<std::string, std::string>> arm_table_collided_pairs;
+    
     std::set<std::pair<std::string, std::string>> adjacent_pairs;
     std::set<std::string> arm_predicted_links;
-    std::set<std::string> station_predicted_links;
-    std::set<std::string> table_predicted_links;
+    
 
 
     for (const auto &joint : arm_model_.joints_) {
@@ -397,72 +308,11 @@ private:
         }
       }
 
-
-      auto table_link_name = "base_link";  // Replace with correct table link
-      auto table_obj = table_collision_objects_.at(table_link_name);
-
-      fcl::CollisionResultd table_result;
-      fcl::collide(link1_obj.get(), table_obj.get(), request, table_result);
-
-      fcl::DistanceResultd table_resultd;
-      fcl::distance(link1_obj.get(), table_obj.get(), requestd, table_resultd);
-
-      if (table_resultd.min_distance < 0.01) {
-        arm_predicted_links.insert(link1_name);
-        table_predicted_links.insert(table_link_name);
-        RCLCPP_WARN(this->get_logger(), "[ARM-TABLE PREDICT] %s <-> %s, dist = %.3f m",
-                    link1_name.c_str(), table_link_name, table_resultd.min_distance);
-      }
-
-      if (table_result.isCollision()) {
-        arm_collided_links.insert(link1_name);
-        table_collided_links.insert(table_link_name);
-        arm_table_collided_pairs.emplace_back(link1_name, table_link_name);
-        if (!arm_table_collided_pairs.empty()) {
-          RCLCPP_INFO(this->get_logger(), "[ARM-TABLE COLLISION] Links involved:");
-          for (const auto &[arm_link, table_link] : arm_table_collided_pairs) {
-            RCLCPP_INFO(this->get_logger(), "- ARM:%s <-> TABLE:%s", arm_link.c_str(), table_link.c_str());
-          }
-        }
-      }
-
-      // ===============================
-      auto station_link_name = "base_link";  // Replace if needed
-      auto station_obj = station_collision_objects_.at(station_link_name);
-
-      fcl::CollisionResultd station_result;
-      fcl::collide(link1_obj.get(), station_obj.get(), request, station_result);
-
-      fcl::DistanceResultd station_resultd;
-      fcl::distance(link1_obj.get(), station_obj.get(), requestd, station_resultd);
-
-      if (station_resultd.min_distance < 0.05) {
-        arm_predicted_links.insert(link1_name);
-        station_predicted_links.insert(station_link_name);
-        RCLCPP_WARN(this->get_logger(), "[ARM-STATION PREDICT] %s <-> %s, dist = %.3f m",
-                    link1_name.c_str(), station_link_name, station_resultd.min_distance);
-      }
-
-      if (station_result.isCollision()) {
-        arm_collided_links.insert(link1_name);
-        station_collided_links.insert(station_link_name);
-        arm_station_collided_pairs.emplace_back(link1_name, station_link_name);
-
-        if (!arm_station_collided_pairs.empty()) {
-        RCLCPP_INFO(this->get_logger(), "[ARM-STATION COLLISION] Links involved:");
-        for (const auto &[arm_link, station_link] : arm_station_collided_pairs) {
-          RCLCPP_INFO(this->get_logger(), "- ARM:%s <-> STATION:%s", arm_link.c_str(), station_link.c_str());
-        }
-      }
-      }
     
 
     publishArmMarkers(arm_collided_links, arm_predicted_links);
     
-    // Create station visualization markers
-    publishStationMarkers(station_collided_links, station_predicted_links);
 
-    publishTableMarkers(table_collided_links, table_predicted_links);
     }
    
 
@@ -490,7 +340,7 @@ private:
       } else if (predicted_links.count(link_name)) {
         marker.color.r = 0.0;
         marker.color.g = 0.0;
-        marker.color.b = 1.0; // Orange for prediction
+        marker.color.b = 1.0; 
       } else {
         marker.color.r = 0.0;
         marker.color.g = 1.0;
@@ -504,71 +354,7 @@ private:
     marker_pub_->publish(marker_array);
   }
 
-  void publishStationMarkers(const std::set<std::string>& collided_links, const std::set<std::string>& predicted_links) {
-    visualization_msgs::msg::MarkerArray marker_array;
-    int id = 1000; // Different ID range for station
-    
-    for (const auto &pair : station_model_.links_) {
-      const auto &link = pair.second;
-      if (!link->collision || !link->collision->geometry) continue;
-
-      visualization_msgs::msg::Marker marker = createMarker(
-        link, Eigen::Isometry3d::Identity(), id++, "station_collision", station_package_share_dir_);
-      
-      // Set color based on collision status
-      if (collided_links.count(link->name)) {
-        marker.color.r = 1.0;
-        marker.color.g = 0.0;
-        marker.color.b = 0.0;
-      } else if (predicted_links.count(link->name)) {
-        marker.color.r = 0.0;
-        marker.color.g = 0.0;
-        marker.color.b = 1.0; // Orange for prediction
-      } else {
-        marker.color.r = 0.0;
-        marker.color.g = 1.0;
-        marker.color.b = 0.0; // Gray for station
-      }
-      marker.color.a = 0.5;
-
-      marker_array.markers.push_back(marker);
-    }
-
-    station_marker_pub_->publish(marker_array);
-  }
-
-   void publishTableMarkers(const std::set<std::string>& collided_links, const std::set<std::string>& predicted_links) {
-    visualization_msgs::msg::MarkerArray marker_array;
-    int id = 1000; 
-    
-    for (const auto &pair : table_model_.links_) {
-      const auto &link = pair.second;
-      if (!link->collision || !link->collision->geometry) continue;
-
-      visualization_msgs::msg::Marker marker = createMarker(
-        link, Eigen::Isometry3d::Identity(), id++, "table_collision", table_package_share_dir_);
-      
-      // Set color based on collision status
-      if (collided_links.count(link->name)) {
-        marker.color.r = 1.0;
-        marker.color.g = 0.0;
-        marker.color.b = 0.0;
-      } else if (predicted_links.count(link->name)) {
-        marker.color.r = 0.0;
-        marker.color.g = 0.0;
-        marker.color.b = 1.0; 
-      } else {
-        marker.color.r = 0.0;
-        marker.color.g = 1.0;
-        marker.color.b = 0.0; 
-      }
-      marker.color.a = 0.5;
-
-      marker_array.markers.push_back(marker);
-    }
-
-    table_marker_pub_->publish(marker_array);
-  }
+  
 
   visualization_msgs::msg::Marker createMarker(const urdf::LinkConstSharedPtr& urdf_link, 
                                                const Eigen::Isometry3d& link_transform,

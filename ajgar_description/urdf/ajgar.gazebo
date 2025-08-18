@@ -42,13 +42,6 @@
   <self_collide>true</self_collide>
 </gazebo>
 
-<!-- <gazebo reference="table_link">
-  <material>${body_color}</material>
-  <mu1>0.2</mu1>
-  <mu2>0.2</mu2>
-  <self_collide>true</self_collide>
-</gazebo> -->
-
 <gazebo reference="suction_1">
   <material>${body_color}</material>
   <mu1>0.2</mu1>
@@ -57,6 +50,20 @@
 </gazebo>
 
 <gazebo reference="end__1">
+  <material>${body_color}</material>
+  <mu1>0.2</mu1>
+  <mu2>0.2</mu2>
+  <self_collide>true</self_collide>
+</gazebo>
+
+<gazebo reference="table_v1_1">
+  <material>${body_color}</material>
+  <mu1>0.2</mu1>
+  <mu2>0.2</mu2>
+  <self_collide>true</self_collide>
+</gazebo>
+
+<gazebo reference="Station_v3_v1_1">
   <material>${body_color}</material>
   <mu1>0.2</mu1>
   <mu2>0.2</mu2>
